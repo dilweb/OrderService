@@ -1,77 +1,70 @@
+﻿import asyncio
 import json
-import threading
-import queue
 import logging
-from confluent_kafka import Producer
+
+from aiokafka import AIOKafkaProducer
+from aiokafka.errors import KafkaError
 
 from orderservice.kafka.config import kafka_settings
 
 logger = logging.getLogger(__name__)
 
 
-class AsyncOrderProducer:
+class OrderKafkaProducer:
     def __init__(self, bootstrap_servers: str, topic: str):
-        self.topic = topic
-        self.producer = Producer({
-            "bootstrap.servers": bootstrap_servers,
-            "client.id": "order-service-producer",
-            "acks": "all",
-            "retries": 3,
-            "retry.backoff.ms": 100,
-        })
-        self._q: queue.Queue[dict] = queue.Queue(maxsize=10000)
-        self._stop = threading.Event()
-        self._worker = threading.Thread(target=self._run, daemon=True)
-        self._worker.start()
+        self._producer = AIOKafkaProducer(
+            bootstrap_servers=bootstrap_servers,
+            client_id="order-service-producer",
+            enable_idempotence=True,
+            acks="all",
+            linger_ms=5,
+        )
+        self._topic = topic
+        self._started = False
+        self._lock = asyncio.Lock()
 
-    def _delivery_callback(self, err, msg):
-        if err:
-            logger.error("Kafka delivery failed: %s", err)
-        else:
-            logger.info("Kafka delivery ok: %s/%s", msg.topic(), msg.offset())
+    async def start(self) -> None:
+        async with self._lock:
+            if self._started:
+                return
+            await self._producer.start()
+            self._started = True
+            logger.info("Kafka producer started")
 
-    def _run(self):
-        while not self._stop.is_set():
-            try:
-                order = self._q.get(timeout=0.1)
-            except queue.Empty:
-                self.producer.poll(0)
-                continue
+    async def stop(self) -> None:
+        async with self._lock:
+            if not self._started:
+                return
+            await self._producer.stop()
+            self._started = False
+            logger.info("Kafka producer stopped")
 
-            try:
-                self.producer.produce(
-                    topic=self.topic,
-                    key=order["order_id"].encode("utf-8"),
-                    value=json.dumps(order, ensure_ascii=False).encode("utf-8"),
-                    callback=self._delivery_callback,
-                )
-            except Exception:
-                logger.exception("produce() failed")
-            finally:
-                self.producer.poll(0)
-                self._q.task_done()
-
-    def publish_async(self, order: dict) -> bool:
+    async def publish_event(self, event: dict) -> bool:
+        if not self._started:
+            raise RuntimeError("Kafka producer is not started")
         try:
-            self._q.put_nowait(order)
+            await self._producer.send_and_wait(
+                topic=self._topic,
+                key=event["order_id"].encode("utf-8"),
+                value=json.dumps(event, ensure_ascii=False).encode("utf-8"),
+            )
+            logger.debug("order_id=%s message_id=%s published", event.get("order_id"), event.get("message_id"))
             return True
-        except queue.Full:
-            logger.warning("producer queue full, dropping")
+        except KafkaError:
+            logger.exception("Kafka publish failed for order %s", event.get("order_id"))
+            return False
+        except Exception:
+            logger.exception("Unexpected error while publishing order %s", event.get("order_id"))
             return False
 
-    def close(self):
-        self._stop.set()
-        self._worker.join(timeout=2)
-        self.producer.flush(timeout=5)
+
+_order_producer: OrderKafkaProducer | None = None
 
 
-_order_producer: AsyncOrderProducer | None = None
-
-
-def get_producer() -> AsyncOrderProducer:
+def get_producer() -> OrderKafkaProducer:
     global _order_producer
     if _order_producer is None:
-        _order_producer = AsyncOrderProducer(
+        _order_producer = OrderKafkaProducer(
             bootstrap_servers=kafka_settings.bootstrap_servers,
             topic=kafka_settings.orders_topic,
         )

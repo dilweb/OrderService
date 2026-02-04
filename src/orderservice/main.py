@@ -1,6 +1,11 @@
+
+import asyncio
 from contextlib import asynccontextmanager
 import logging
+import os
 import time
+
+from aiokafka.errors import KafkaConnectionError
 from fastapi import FastAPI, Request
 import uvicorn
 
@@ -13,24 +18,48 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+MAX_CONNECT_ATTEMPTS = int(os.getenv("KAFKA_CONNECT_MAX_ATTEMPTS", "10"))
+CONNECT_BASE_DELAY = float(os.getenv("KAFKA_CONNECT_RETRY_DELAY", "1.0"))
+
+
+def _max_delay(current: float) -> float:
+    return min(current * 2, 30.0)
+
+
+async def _start_producer_with_retry(producer) -> None:
+    delay = CONNECT_BASE_DELAY
+    for attempt in range(1, MAX_CONNECT_ATTEMPTS + 1):
+        try:
+            await producer.start()
+            return
+        except KafkaConnectionError:
+            logger.warning(
+                "Kafka connection attempt %s/%s failed, retrying in %.1fs",
+                attempt,
+                MAX_CONNECT_ATTEMPTS,
+                delay,
+            )
+            if attempt == MAX_CONNECT_ATTEMPTS:
+                raise
+            await asyncio.sleep(delay)
+            delay = _max_delay(delay)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Управление жизненным циклом приложения
-    - Код до yield: выполняется при старте
-    - Код после yield: выполняется при остановке
+    Lifecycle hook для FastAPI: инициализируем Kafka продьюсер перед запуском
+    и аккуратно останавливаем после завершения.
     """
     logger.info("Order Service запускается...")
     producer = get_producer()
-    logger.info("Order Service готов к работе")
-    
+    await _start_producer_with_retry(producer)
+    logger.info("Order Service готов принимать запросы")
+
     yield
-    
-    logger.info("Order Service останавливается...")
-    from orderservice.kafka.producer import _order_producer
-    if _order_producer:
-        _order_producer.close()
+
+    logger.info("Order Service завершает работу...")
+    await producer.stop()
     logger.info("Order Service остановлен")
 
 
@@ -39,6 +68,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
 
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
