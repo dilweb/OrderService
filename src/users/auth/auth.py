@@ -1,11 +1,14 @@
 from passlib.context import CryptContext
-from jose import jwt, JWTError
+from jose import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi import Request, HTTPException, status
+from fastapi import Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from settings import get_auth_data
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer(auto_error=False)
 
 
 def get_password_hash(password: str) -> str:
@@ -25,8 +28,17 @@ def create_access_token(data: dict) -> str:
     return encode_jwt
 
 
-def get_token(request: Request):
+def get_token(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Security(security)
+):
+    if credentials:
+        return credentials.credentials
+    
     token = request.cookies.get('users_access_token')
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Token not found')
-    return token
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail='Token not found'
+        )
+    return token 

@@ -9,6 +9,9 @@ class UserOut(BaseModel):
     phone_number: str 
     first_name: str 
     last_name: str 
+    is_user: bool
+    is_admin: bool
+    is_super_admin: bool
 
 class SUserRegister(BaseModel):
     email: EmailStr = Field(..., description="Электронная почта", unique=True)

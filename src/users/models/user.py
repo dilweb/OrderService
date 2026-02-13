@@ -1,7 +1,6 @@
 from sqlalchemy import text
 from sqlalchemy.orm import Mapped, mapped_column
 from src.db.base import Base
-from pydantic import EmailStr
 
 
 class User(Base):

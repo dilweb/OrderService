@@ -7,7 +7,7 @@ from src.users.auth.schemas import SUserRegister, UserOut, SUserAuth
 from src.users.dao import UserDAO 
 from src.db.session import get_session
 from src.users.auth.auth import verify_password, create_access_token
-from src.users.auth.dependencies import get_user_dao, get_current_user
+from src.users.auth.dependencies import get_user_dao, get_current_user, get_current_admin_user
 from src.users.models.user import User
 
 
@@ -66,9 +66,8 @@ async def get_user_by_id(user_id: int, session: AsyncSession = Depends(get_sessi
     return user
 
 
-@router.get("/get_users_list/")
-async def get_user_by_id(session: AsyncSession = Depends(get_session)) -> List[UserOut]:
-    user_dao = UserDAO(session)
+@router.get("/users", dependencies=[Depends(get_current_admin_user)])
+async def get_all_users(user_dao: UserDAO = Depends(get_user_dao)) -> List[UserOut]:
     
     users_list = await user_dao.get_users_list()
     if not users_list:
@@ -78,3 +77,4 @@ async def get_user_by_id(session: AsyncSession = Depends(get_session)) -> List[U
         )
     
     return users_list
+

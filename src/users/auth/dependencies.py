@@ -7,6 +7,7 @@ from src.db.session import get_session
 from src.users.dao import UserDAO
 from src.users.auth.auth import get_token
 from settings import get_auth_data
+from src.users.models.user import User
 
 
 def get_user_dao(session: AsyncSession = Depends(get_session)) -> UserDAO:
@@ -37,3 +38,9 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='User not found')
 
     return user
+
+
+async def get_current_admin_user(current_user: User = Depends(get_current_user)):
+    if current_user.is_admin:
+        return current_user
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Недостаточно прав!')
